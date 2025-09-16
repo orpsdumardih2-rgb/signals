@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Short-term Forex Signal Detector — EUR/USD, GBP/USD, AUD/CAD, AUD/JPY, AUD/USD</title>
+  <style>
+    body{font-family:inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;margin:12px;background:#0f172a;color:#e6eef8}
+    h1{font-size:20px;margin:0 0 8px}
+    .row{display:flex;gap:12px;align-items:center}
+    .card{background:#0b1220;border:1px solid #162033;padding:12px;border-radius:8px;box-shadow:0 6px 24px rgba(2,6,23,0.6)}
+    label{display:block;font-size:12px;color:#9fb2d4;margin-bottom:6px}
+    input, select, button{padding:8px;border-radius:6px;border:1px solid #233544;background:#08121b;color:#e6eef8}
+    button{cursor:pointer}
+    #chart{width:100%;height:360px}
+    .signals{display:flex;gap:10px;margin-top:10px}
+    .signal-box{flex:1;padding:10px;border-radius:8px}
+    .bull{background:linear-gradient(135deg,#052b1f,#094b30);border:1px solid #0f6b47}
+    .bear{background:linear-gradient(135deg,#36070a,#4b0b11);border:1px solid #6b0f19}
+    .neutral{background:#102133;border:1px solid #213447}
+    small{color:#9fb2d4}
+    .muted{color:#89a7c4}
+    pre{background:#06101a;padding:8px;border-radius:6px;overflow:auto}
+    .log{height:80px;overflow:auto;background:#041018;padding:8px;border-radius:6px;border:1px solid #152733}
+  </style>
+  <!-- Lightweight Charts (for a clean embeddable chart) -->
+  <script src="https://unpkg.com/lightweight-charts@3.9.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <h1>Short-term Forex Signal Detector</h1>
+  <div class="row">
+    <div class="card" style="flex:1;min-width:300px">
+      <label>Currency pair</label>
+      <select id="pair">
+        <option>EUR/USD</option>
+        <option>GBP/USD</option>
+        <option>AUD/CAD</option>
+        <option>AUD/JPY</option>
+        <option>AUD/USD</option>
+      </select>
+      <label>Data connector (enter API key for live data) <small class="muted">(TwelveData/AlphaVantage format)</small></label>
+      <input id="apikey" placeholder="Enter API key (optional)" />
+      <label>Choose connector</label>
+      <select id="connector">
+        <option value="twelvedata">TwelveData (recommended)</option>
+        <option value="alphavantage">Alpha Vantage</option>
+        <option value="sim">Simulation mode (no API key)</option>
+      </select>
+      <div style="height:8px"></div>
+      <button id="connect">Connect & Start</button>
+      <div style="height:8px"></div>
+      <small class="muted">Polling interval when live: 5s. Signals combine EMA crossover, RSI, and short-term linear projection. News sentiment included if you provide a NewsAPI key (optional).</small>
+    </div>
+    <div class="card" style="width:360px">
+      <label>Current status</label>
+      <div id="status">Not connected</div>
+      <div style="height:8px"></div>
+      <label>Latest values</label>
+      <pre id="latest">—</pre>
+      <div style="height:8px"></div>
+      <label>Signal summary</label>
+      <div class="signals">
+        <div class="signal-box bull" id="sig5"><strong>5m:</strong><div id="sig5txt">—</div></div>
+        <div class="signal-box neutral" id="sig10"><strong>10m:</strong><div id="sig10txt">—</div></div>
+        <div class="signal-box bear" id="sig15"><strong>15m:</strong><div id="sig15txt">—</div></div>
+      </div>
+      <div style="height:8px"></div>
+      <label>Console log (visible)</label>
+      <div id="log" class="log"></div>
+    </div>
+  </div>
+
+  <div style="height:12px"></div>
+  <div class="card">
+    <div id="chart"></div>
+    <div style="height:8px"></div>
+    <small class="muted">Indicators shown: EMA(5), EMA(20), RSI(14) plot (lower), forecast points for +5/10/15 minutes.</small>
+  </div>
+
+  <div style="height:12px"></div>
+  <div class="card">
+    <h3 style="margin:0 0 6px">Notes & Troubleshooting</h3>
+    <ul class="muted">
+      <li>If the button doesn't respond: check the browser console (F12) and the visible log box below.</li>
+      <li>When opening the file via <code>file://</code> protocol some browsers block external requests (CORS). Run a local server: e.g. <code>python -m http.server 8000</code> or <code>npx serve</code> in the directory and open <code>http://localhost:8000/forex_short_term_signal_detector.html</code>.</li>
+      <li>If you don't have an API key, select <strong>Simulation mode</strong> to test behavior immediately.</li>
+      <li>Errors from fetch will fall back to simulation automatically and show details in the log box.</li>
+    </ul>
+    <p class="muted">This tool is educational. It does not guarantee profits. Always test on a demo account.</p>
+  </div>
+
+<script>
+// small visible logger
+function vlog(msg){ const el=document.getElementById('log'); const t=new Date().toLocaleTimeString(); el.innerText = `[${t}] ${msg}
+` + el.innerText; console.log(msg); }
+
+// --- Utilities: EMA, RSI, linear regression forecast ---
+function ema(values, period) {
+  const k = 2/(period+1);
+  let emaArr = [];
+  let prev;
+  for(let i=0;i<values.length;i++){
+    if(i===0) prev = values[i];
+    const val = (values[i]-prev)*k + prev;
+    prev = val;
+    emaArr.push(val);
+  }
+  return emaArr;
+}
+function rsi(close, period=14){
+  if(close.length<period+1) return null;
+  let gains=0,losses=0;
+  for(let i=1;i<=period;i++){const diff=close[i]-close[i-1]; if(diff>0) gains+=diff; else losses+=Math.abs(diff);} 
+  let avgGain=gains/period, avgLoss=losses/period;
+  let rs = avgLoss===0?100:avgGain/avgLoss;
+  let rsi=100-(100/(1+rs));
+  return rsi;
+}
+function linearForecast(points, minutesAhead, timeframeMinutes=1){
+  const n = points.length;
+  if(n<3) return null;
+  let sx=0, sy=0, sxx=0, sxy=0;
+  for(let i=0;i<n;i++){const x=i; const y=points[i].value; sx+=x; sy+=y; sxx+=x*x; sxy+=x*y;}
+  const denom = (n*sxx - sx*sx);
+  const m = denom===0?0: (n*sxy - sx*sy)/denom;
+  const b = (sy - m*sx)/n;
+  const stepsAhead = Math.round(minutesAhead/timeframeMinutes);
+  const xPred = n-1 + stepsAhead;
+  const pred = m*xPred + b;
+  return pred;
+}
+function simpleSentiment(text){ if(!text) return 0; const pos=['gain','up','rise','positive','beat','surge','strong','good','higher']; const neg=['drop','down','fall','negative','miss','weak','decline','lower','sell','loss']; const t=text.toLowerCase(); let score=0; pos.forEach(w=>{ if(t.includes(w)) score+=1 }); neg.forEach(w=>{ if(t.includes(w)) score-=1 }); return score; }
+
+// state
+let dataBuff = [];
+let chart, priceSeries, ema5Series, ema20Series, forecastSeries;
+let timer=null;
+let timeframeMinutes = 1;
+
+function createChart(){ try{ document.getElementById('chart').innerHTML=''; chart = LightweightCharts.createChart(document.getElementById('chart'), {width:document.getElementById('chart').clientWidth, height:360, layout:{background:'#061018',textColor:'#cfe7ff'}, grid:{vertLines:{color:'#0d2330'}, horzLines:{color:'#0d2330'}}}); priceSeries = chart.addCandlestickSeries({upColor:'#0b6b3a', downColor:'#6b0f19', wickUpColor:'#0b6b3a', wickDownColor:'#6b0f19'}); ema5Series = chart.addLineSeries({lineWidth:2}); ema20Series = chart.addLineSeries({lineWidth:2}); forecastSeries = chart.addLineSeries({lineWidth:3, lineStyle:2}); }catch(e){ vlog('Chart init error: '+e.message); }
+}
+function updateChartFromCandles(candles){ if(!priceSeries) createChart(); try{ priceSeries.setData(candles); const closes = candles.map(c=>c.close); const times = candles.map(c=>c.time); const ema5 = ema(closes,5); const ema20 = ema(closes,20); const ema5Points = ema5.map((v,i)=>({time:times[i], value: parseFloat(v.toFixed(6))})); const ema20Points = ema20.map((v,i)=>({time:times[i], value: parseFloat(v.toFixed(6))})); ema5Series.setData(ema5Points.slice(-200)); ema20Series.setData(ema20Points.slice(-200)); }catch(e){ vlog('Chart update error: '+e.message); } }
+
+function computeSignals(){ if(dataBuff.length<10) return null; const closes = dataBuff.map(d=>d.value); const lastClose = closes[closes.length-1]; const ema5arr = ema(closes,5); const ema20arr = ema(closes,20); const ema5last = ema5arr[ema5arr.length-1]; const ema20last = ema20arr[ema20arr.length-1]; const emaPrev5 = ema5arr[ema5arr.length-2]||ema5last; const emaPrev20 = ema20arr[ema20arr.length-2]||ema20last; const rsiVal = rsi(closes,14) || 50; const crossoverBull = (emaPrev5 <= emaPrev20) && (ema5last > ema20last); const crossoverBear = (emaPrev5 >= emaPrev20) && (ema5last < ema20last); const pts = dataBuff.map((d,i)=>({time:d.time, value:d.value})); const f5 = linearForecast(pts,5); const f10 = linearForecast(pts,10); const f15 = linearForecast(pts,15); const slope5 = f5 ? (f5 - lastClose) : 0; const slope10 = f10 ? (f10 - lastClose) : 0; const slope15 = f15 ? (f15 - lastClose) : 0; const newsScore = window._latestNewsScore || 0;
+  function decide(crossover, slope, rsi, news){ let score = 0; if(crossover) score += 2; if(slope>0) score += 1; else if(slope<0) score -= 1; if(rsi<30) score += 1; if(rsi>70) score -= 1; if(news>0) score += 1; if(news<0) score -=1; if(score>=2) return 'BULLISH'; if(score<=-2) return 'BEARISH'; return 'NEUTRAL'; }
+  const out5 = decide(crossoverBull?true:(crossoverBear?false:null), slope5, rsiVal, newsScore); const out10 = decide(crossoverBull?true:(crossoverBear?false:null), slope10, rsiVal, newsScore); const out15 = decide(crossoverBull?true:(crossoverBear?false:null), slope15, rsiVal, newsScore);
+  if(f5 && f10 && f15){ const lastTime = pts[pts.length-1].time; const nextPoints = []; nextPoints.push({time: lastTime + 60*5, value: parseFloat(f5.toFixed(6))}); nextPoints.push({time: lastTime + 60*10, value: parseFloat(f10.toFixed(6))}); nextPoints.push({time: lastTime + 60*15, value: parseFloat(f15.toFixed(6))}); try{ forecastSeries.setData(nextPoints.map(p=>({time: p.time, value: p.value}))); }catch(e){ /* ignore */ } }
+  return {lastClose, ema5last, ema20last, rsiVal, out5, out10, out15, f5,f10,f15}; }
+
+// Connectors
+async function fetchCandlesTwelve(symbol, apikey, interval='1min', outputsize=100){ const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${outputsize}&format=JSON&apikey=${encodeURIComponent(apikey)}`; const r = await fetch(url); const j = await r.json(); if(j.status==='error') throw new Error(j.message || JSON.stringify(j)); if(!j.values) throw new Error('No values from TwelveData'); const candles = j.values.slice().reverse().map(v=>({time: Math.floor(new Date(v.datetime).getTime()/1000), open: parseFloat(v.open), high:parseFloat(v.high), low:parseFloat(v.low), close:parseFloat(v.close)})); return candles; }
+async function fetchCandlesAlphaVantage(symbol, apikey, interval='1min', outputsize='compact'){ const sym = symbol.replace('/',''); const url = `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=${sym.slice(0,3)}&to_symbol=${sym.slice(3)}&interval=${interval}&outputsize=${outputsize}&apikey=${encodeURIComponent(apikey)}`; const r = await fetch(url); const j = await r.json(); const key = Object.keys(j).find(k=>k.includes('Time Series')); if(!key) throw new Error('No data from AlphaVantage: '+JSON.stringify(j)); const values = j[key]; const candles = Object.keys(values).map(k=>({time: Math.floor(new Date(k).getTime()/1000), open: parseFloat(values[k]['1. open']), high:parseFloat(values[k]['2. high']), low:parseFloat(values[k]['3. low']), close:parseFloat(values[k]['4. close'])})).sort((a,b)=>a.time-b.time); return candles; }
+function generateSimCandles(pair, existingCandles, count=120){ const candles = existingCandles?existingCandles.slice():[]; let lastClose = candles.length?candles[candles.length-1].close: (pair.startsWith('EUR')?1.08:1.3); let t = candles.length?candles[candles.length-1].time: Math.floor(Date.now()/1000) - (count*60); for(let i=0;i<count;i++){ const open = lastClose; const change = (Math.random()-0.5) * 0.0015; const close = parseFloat((open + change).toFixed(6)); const high = Math.max(open,close) + Math.random()*0.0005; const low = Math.min(open,close) - Math.random()*0.0005; t += 60; candles.push({time: t, open, high, low, close}); lastClose = close; } return candles.slice(-300); }
+async function fetchNews(newsApiKey, query){ if(!newsApiKey) return []; const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&pageSize=5&sortBy=publishedAt&apiKey=${encodeURIComponent(newsApiKey)}`; try{const r=await fetch(url); const j=await r.json(); if(j.articles) return j.articles.map(a=>({title:a.title,desc:a.description||'',src:a.source.name, published:a.publishedAt})); }catch(e){ vlog('News fetch error: '+e.message); } return []; }
+
+async function poll(){ const pair = document.getElementById('pair').value; const connector = document.getElementById('connector').value; const apikey = document.getElementById('apikey').value.trim(); try{ let candles; if(connector==='twelvedata'){ if(!apikey) throw new Error('TwelveData API key required for live mode'); candles = await fetchCandlesTwelve(pair, apikey,'1min',120); } else if(connector==='alphavantage'){ if(!apikey) throw new Error('AlphaVantage API key required for live mode'); candles = await fetchCandlesAlphaVantage(pair, apikey,'1min'); } else { candles = generateSimCandles(pair, null, 120); }
+    updateChartFromCandles(candles);
+    dataBuff = candles.map(c=>({time:c.time, value:c.close}));
+    const last = candles[candles.length-1];
+    document.getElementById('latest').innerText = `Time: ${new Date(last.time*1000).toLocaleString()}
+Close: ${last.close}`;
+    const newsKey = document.getElementById('newskey')?document.getElementById('newskey').value.trim():'';
+    const articles = await fetchNews(newsKey, pair);
+    let ns=0; if(articles.length){articles.forEach(a=>ns += simpleSentiment((a.title||'') + ' ' + (a.desc||'')));}
+    window._latestNewsScore = ns;
+    const signals = computeSignals();
+    if(signals){ document.getElementById('status').innerText = 'Connected (live) — updated '+ new Date().toLocaleTimeString(); document.getElementById('latest').innerText = `Time: ${new Date(dataBuff[dataBuff.length-1].time*1000).toLocaleString()}
+Close: ${signals.lastClose}
+EMA5: ${signals.ema5last.toFixed(6)}
+EMA20: ${signals.ema20last.toFixed(6)}
+RSI(14): ${signals.rsiVal.toFixed(2)}`; setSignalBox('sig5', signals.out5); setSignalBox('sig10', signals.out10); setSignalBox('sig15', signals.out15); }
+  }catch(err){ document.getElementById('status').innerText = 'Error: ' + (err.message||err); vlog('Poll error: '+(err.message||err)); const sim = generateSimCandles(document.getElementById('pair').value, null, 120); updateChartFromCandles(sim); dataBuff = sim.map(c=>({time:c.time, value:c.close})); document.getElementById('status').innerText += ' — using simulation'; }
+}
+
+function setSignalBox(id, state){ const el=document.getElementById(id); el.classList.remove('bull','bear','neutral'); if(state==='BULLISH') el.classList.add('bull'); else if(state==='BEARISH') el.classList.add('bear'); else el.classList.add('neutral'); document.getElementById(id+'txt').innerText = state; }
+
+// wiring with robust feedback
+const connectBtn = document.getElementById('connect');
+connectBtn.addEventListener('click', ()=>{
+  try{
+    if(timer){ clearInterval(timer); timer=null; connectBtn.innerText='Connect & Start'; document.getElementById('status').innerText='Stopped'; vlog('Stopped polling'); return; }
+    createChart();
+    document.getElementById('status').innerText='Starting...'; vlog('Starting poll loop');
+    // immediate feedback to user
+    poll().then(()=>{ vlog('Initial poll completed'); }).catch(e=>{ vlog('Initial poll error: '+e.message); });
+    timer = setInterval(()=>{ poll().catch(e=>vlog('Periodic poll error: '+(e.message||e)); ); }, 5000);
+    connectBtn.innerText='Stop';
+  }catch(e){ vlog('Connect click error: '+e.message); document.getElementById('status').innerText='Error: '+e.message; }
+});
+
+// responsive
+window.addEventListener('resize', ()=>{ if(chart) chart.applyOptions({width:document.getElementById('chart').clientWidth}); });
+
+// show news key input
+(function(){ const card = document.createElement('div'); card.className='card'; card.style.marginTop='12px'; card.innerHTML = '<label>NewsAPI key (optional)</label><input id="newskey" placeholder="NewsAPI.org key (optional)" /> <small class="muted">If provided, headlines will be fetched and used for a lightweight sentiment boost.</small>';
+  document.body.appendChild(card);
+})();
+
+// immediate note in log
+vlog('Page loaded. If "Connect & Start" does nothing: 1) make sure you are serving the file via a local HTTP server (not file://), 2) open DevTools (F12) and check console for CORS errors, 3) try Simulation mode.');
+</script>
+</body>
+</html>
